@@ -1,0 +1,7 @@
+discord.py==2.5.2
+openrgb_python==0.3.2
+paramiko==3.5.0
+Requests==2.32.4
+tapo==0.8.4
+tinytuya==1.16.1
+yeelight==0.7.16
