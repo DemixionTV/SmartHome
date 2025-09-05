@@ -16,6 +16,7 @@ class ControlDevice:
         self.room = None
         self.manufacturer = None
         self.no_save = no_save
+        self.locked = False
     def has_ability(self, ability):
         return ability in [ab[0] for ab in self.device_abilities]
     def toggle_ability(self, ability, **params):
@@ -34,6 +35,14 @@ class ControlDevice:
     def on_register(self, register_info = None):
         pass
 
+    def lock(self,lock):
+        self.locked = lock
+    def is_locked(self):
+        return self.locked
+    
+    def get_control_device(self):
+        pass
+
 
 
     def get_online_devices(self):
@@ -44,4 +53,5 @@ class ControlDevice:
         pass
     def get_power(self):
         return True
-
+    def online_device_update(self,target_ip_address,port = 11511):
+        pass

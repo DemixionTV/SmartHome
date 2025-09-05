@@ -14,7 +14,7 @@ class DiscordCD(ControlDevice):
     def __init__(self, api_key):
         super().__init__(locals().copy())
         intents = discord.Intents.default()
-        intents.voice_states = True  # обязательно, если ты работаешь с голосом
+        intents.voice_states = True
         intents.message_content = True
         self.client = commands.Bot(command_prefix='?',intents = intents)
         self.register_events()
@@ -41,8 +41,16 @@ class DiscordCD(ControlDevice):
 #            print(ctx.__dict__, error.__dict__)
 #            print(ctx.invoked_with, ctx.message.content)
     def run(self):
-        self.client.run(self.api_key)
+        try:
+            self.client.run(self.api_key)
+        except:
+            self.ready = False
+            self.nickname = None
+            self.run()
     def get_device_name(self):
         return f'Discord bot {self.nickname}'
     def unregister(self):
         self.client.close()
+
+    def get_control_device(self):
+        return self.nickname

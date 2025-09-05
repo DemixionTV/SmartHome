@@ -2,6 +2,7 @@ import sqlite3
 from typing import Dict, List
 import json
 import time
+import datetime
 from threading import Thread
 import inspect
 
@@ -22,28 +23,39 @@ from Diamon2.SmartHome3.Manufacturer.Tuya import Tuya
 from Diamon2.SmartHome3.Manufacturer.Yeelight import Yeelight
 from Diamon2.SmartHome3.Manufacturer.Xigmanas import Xigmanas
 from Diamon2.SmartHome3.Manufacturer.Discord import Discord
+from Diamon2.SmartHome3.Manufacturer.OpenWeather import OpenWeather
+from Diamon2.Functions4.FunctionExecutor import get_arguments, MAX_CONNECTIONS
+from Diamon2.ClientServer.Client.MQTTClient import MQTTClient
 
 
 
 class Room(DiamonPackage):
-    def __init__(self):
+    def __init__(self, mqtt_server = None):
         super().__init__('SmartRoom')
+        self.mqtt_client = MQTTClient('192.168.1.178')
+        self.local_ip = getLocalIP()
         self.connection = sqlite3.connect(DIAMON_CONFIG_PATH + '/SmartHome/Room.db',check_same_thread=False)
+        self.connection.set_trace_callback(self.get_database_logger(self.connection))
         cursor = self.connection.cursor()
         cursor.execute('PRAGMA foreign_keys = ON')
+        cursor.execute('PRAGMA journal_mode = OFF')
+        cursor.execute('PRAGMA synchronous = OFF')
         cursor.execute('create table if not exists Manufacturer(id integer primary key autoincrement, name text unique)')
         cursor.execute('create table if not exists DeviceType(id integer primary key autoincrement, name text unique)')
         cursor.execute('create table if not exists Auth_info(id integer primary key autoincrement, name text unique, manufacturer int, auth_info text unique, foreign key(manufacturer) references Manufacturer(id) ON DELETE CASCADE)')
-        cursor.execute('create table if not exists Device(id integer primary key autoincrement, name text unique not null, auth_info int, ip_address text, mac_address text unique, device_type int, foreign key(auth_info) references Auth_info(id) ON DELETE CASCADE, foreign key(device_type) references DeviceType(id) ON DELETE CASCADE) ')
+        cursor.execute('create table if not exists Device(id integer primary key autoincrement, name text unique not null, auth_info int, locked bool not null, ip_address text, mac_address text unique, device_type int, foreign key(auth_info) references Auth_info(id) ON DELETE CASCADE, foreign key(device_type) references DeviceType(id) ON DELETE CASCADE) ')
         cursor.execute('create table if not exists NotSmartDevice(id integer primary key autoincrement, name text, ip_address text unique, mac_address text unique)')
         cursor.execute('create table if not exists RealName(id integer primary key autoincrement, name text unique, mac_address text unique, real_name text)')
+        cursor.execute('create table if not exists TemperatureRecord(id integer primary key autoincrement, device_id int, temperature float, time integer, foreign key(device_id) references Device(id) ON DELETE CASCADE, unique(device_id, time))')
+        cursor.execute('create table if not exists HumidityRecord(id integer primary key autoincrement, device_id int, humidity int, time integer, foreign key(device_id) references Device(id) ON DELETE CASCADE, unique(device_id, time))')
+        cursor.execute('create table if not exists PowerRecord(id integer primary key autoincrement, device_id int, power int, time integer, foreign key(device_id) references Device(id) ON DELETE CASCADE, unique(device_id, time))')
+        cursor.execute('create table if not exists FastAction(id integer primary key autoincrement, action text unique not null, action_data text)')
         self.connection.commit()
         for manufacturer in ManufacturerType:
             cursor.execute('insert into Manufacturer(name) values (?) on conflict do nothing',(manufacturer.value,))
         for device_type in DeviceType:
             cursor.execute('insert into DeviceType(name) values (?) on conflict do nothing',(device_type.name,))
         self.connection.commit()
-        self.log(LogType.DatabaseInit,"SmartHome",DIAMON_CONFIG_PATH + '/SmartHome/Room.db')
 
 
         self.subnets = [0,1]
@@ -86,13 +98,14 @@ class Room(DiamonPackage):
         self.loaded = True
         self.check_offline_devices()
 
-        server_address = (getLocalIP(), 11511)
+        server_address = (self.local_ip, 11511)
         httpd = HTTPServer(server_address, HTTPRequestquestHandler)
         httpd.handler = self.on_http_request
         httpd.title = "Diamon2 SmartHome"
         th = Thread(target=lambda:httpd.serve_forever(), daemon=True)
         th.start()
         self.log(LogType.WebServerStarted,f'{httpd.title}', f'{server_address[0]}:{server_address[1]}')
+        self.room_tick_number = 0
         self.room_tick_thread = Thread(target=self.room_tick, daemon=True)
         self.room_tick_thread.start()
         self.log(LogType.Init,'Initialized')
@@ -113,7 +126,17 @@ class Room(DiamonPackage):
                 for device in self.get_device_list():
                     if self.devices[device].get_ip_address() == params['ip'][0] or self.devices[device].get_mac_address() == params['mac'][0].upper():
                         self.unregister_device(device)
-                        
+        elif path == '/execute_command':
+            command = int(int(params['command_num'][0])/5)
+            if command == 0:#тапок бот
+                self.mqtt_client.send_bot_message('demix_botyara','Тапок')
+            elif command == 1:
+                self.mqtt_client.send_bot_message('demix_botyara','фазма')
+            elif command == 2:
+                self.mqtt_client.send_bot_message('demix_botyara','демонологист')
+            else:
+                print(command)
+                
 
 
                     
@@ -121,13 +144,44 @@ class Room(DiamonPackage):
 
     def room_tick(self):
         while True:
-            self.log(LogType.ProgramInfo,'Room tick started')
+            self.log(LogType.ProgramInfo,f'Room tick {self.room_tick_number} started')
             online = self.is_online()
             for device in list(online.keys()).copy():
                 if not online[device]:
                     self.unregister_device(device)
+            for device in self.get_device_list(DeviceAbility.GetHumidity):
+                if self.devices[device].database_id != None:
+                    self.connection.execute('insert or ignore into HumidityRecord(device_id, humidity, time) values (?, ?, ?)', (self.devices[device].database_id, self.devices[device].get_humidity(), int(datetime.datetime.now().timestamp())))
+            for device in self.get_device_list(DeviceAbility.GetTemperature):
+                if self.devices[device].database_id != None:
+                    self.connection.execute('insert or ignore into TemperatureRecord(device_id, temperature, time) values (?, ?, ?)', (self.devices[device].database_id, self.devices[device].get_temperature(), int(datetime.datetime.now().timestamp())))
+            for device in self.get_device_list(DeviceAbility.GetCurrentPower):
+                if self.devices[device].database_id != None:
+                    self.connection.execute('insert or ignore into PowerRecord(device_id, power, time) values (?, ?, ?)', (self.devices[device].database_id, self.devices[device].get_current_power(), int(datetime.datetime.now().timestamp())))
+            if self.room_tick_number % 15 == 0:
+                self.connection.commit()
             time.sleep(10)
-            self.log(LogType.ProgramInfo,'Room tick ended')
+            self.log(LogType.ProgramInfo,f'Room {self.room_tick_number} tick ended')
+            self.room_tick_number += 1
+    
+    def get_temperature_records(self, device, time_from = None, time_to = None):
+        if device in self.get_device_list(DeviceAbility.GetTemperature):
+            self.connection.commit()
+            cursor = self.connection.cursor()
+            cursor.execute('select temperature, time from TemperatureRecord where device_id = ? and time between ? and ?',(self.devices[device].database_id, time_from, time_to))
+            return {res[1]:res[0] for res in cursor.fetchall()}
+    def get_humidity_records(self, device, time_from = None, time_to = None):
+        if device in self.get_device_list(DeviceAbility.GetHumidity):
+            self.connection.commit()
+            cursor = self.connection.cursor()
+            cursor.execute('select humidity, time from HumidityRecord where device_id = ? and time between ? and ?',(self.devices[device].database_id, time_from, time_to))
+            return {res[1]:res[0] for res in cursor.fetchall()}
+    def get_power_records(self, device, time_from = None, time_to = None):
+        if device in self.get_device_list(DeviceAbility.GetCurrentPower):
+            self.connection.commit()
+            cursor = self.connection.cursor()
+            cursor.execute('select power, time from PowerRecord where device_id = ? and time between ? and ?',(self.devices[device].database_id, time_from, time_to))
+            return {res[1]:res[0] for res in cursor.fetchall()}
 
     def check_offline_devices(self):
         cursor = self.connection.cursor()
@@ -184,6 +238,8 @@ class Room(DiamonPackage):
         if device_lst == None:
             return list(self.devices.keys())
         if type(device_lst) == list:
+            if len(device_lst) == 0:
+                return list(self.devices.keys())
             r = []
             for lst in device_lst:
                 r += self.get_device_list(lst)
@@ -201,7 +257,7 @@ class Room(DiamonPackage):
             elif type(device_lst) == ManufacturerType:
                 if self.devices[device].control_device.get_manufacturer_type() == device_lst:
                     device_list.append(device)
-        return device_list
+        return list(set(device_list))
 
     def get_not_smart_devices(self):
         cursor = self.connection.cursor()
@@ -274,6 +330,8 @@ class Room(DiamonPackage):
             self.manufacturers[manufacturer_name] = Xigmanas(self)
         elif manufacturer_type == ManufacturerType.Discord:
             self.manufacturers[manufacturer_name] = Discord(self)
+        elif manufacturer_type == ManufacturerType.OpenWeather:
+            self.manufacturers[manufacturer_name] = OpenWeather(self)
         else:
             self.log(LogType.ProgramWarning,'Manufacturer register failed',f'{manufacturer_name} {manufacturer_type.value}')
             return
@@ -349,10 +407,17 @@ class Room(DiamonPackage):
             self.register_info[device.device_name] = {}
             self.check_offline_devices()
             self.log(LogType.Program_OK,f'Registered device',str(self.devices[device.device_name]))
+            cursor.execute('select locked,id from Device where name=?',(device.device_name,))
+            result = cursor.fetchone()
+            if result[0] == 1:
+                self.devices[device.device_name].lock_device(True)
+            self.devices[device.device_name].database_id = result[1]
             print(f'{bcolors.OKCYAN}Registered device {bcolors.ENDC}{self.devices[device.device_name]}{bcolors.ENDC}')
             if device.has_ability(DeviceAbility.ChildrenDevices):
                 for child in device.create_children_devices():
                     self.register_device(child)
+            if device.has_ability(DeviceAbility.OnlineDeviceUpdate):
+                device.online_device_update(self.local_ip,11511)
 
         except Exception as e:
             self.error_log(e)
@@ -379,6 +444,21 @@ class Room(DiamonPackage):
         for d in self.get_device_list(device):
             res[d] = getattr(self.devices[d],self.func_abilities[ability])(*args, **kwargs)
         return res
+    
+    def get_func_arguments_by_ability(self, ability:DeviceAbility):
+        if ability in self.func_abilities:
+            #return inspect.signature(getattr(SmartDevice,self.func_abilities[ability]).main_func).parameters
+            f = getattr(SmartDevice,self.func_abilities[ability]).main_func
+            inputs,outputs,max_connections = get_arguments(f)
+            #del inputs['self']
+            #del outputs['self']
+            #del max_connections['self']
+            inputs = {k if k != 'self' else 'device':v for k,v in inputs.items()}
+            max_connections['device'] = MAX_CONNECTIONS
+            return inputs,outputs,max_connections
+
+        else:
+            return None, None, None
 
 
     def update_register_info(self, device, key, value):
@@ -399,6 +479,53 @@ class Room(DiamonPackage):
 
     def on_bot_command(self, device, command, full_text, channel, user):
         return
+    
+    def lock_device(self, device, lock):
+        if device in self.devices:
+            self.devices[device].lock_device(lock)
+            cursor = self.connection.cursor()
+            cursor.execute('update Device set locked = ? where name = ?', (int(lock), device))
+            self.connection.commit()
+    
+    def get_locked_devices(self):
+        result = {}
+        for device in self.devices:
+            result[device] = self.devices[device].is_locked()
+        return result
+    def get_main_device_info(self):
+        result = {}
+        for device in self.devices:
+            result[device] = {
+                'Device name':device,
+                'Device type':self.devices[device].device_type.name.replace('_',' '),
+                'Control Device':self.devices[device].get_control_device(),
+                'Manufacturer':self.devices[device].manufacturer.manufacturer_name,
+                'IP Address':self.devices[device].get_ip_address(),
+                'MAC Address':self.devices[device].get_mac_address(),
+                'Database ID':self.devices[device].database_id
+            }
+        return result
+    def create_fast_action(self, name):
+        cursor = self.connection.cursor()
+        cursor.execute('insert or ignore into FastAction(action) values (?)', (name, ))
+        self.connection.commit()
+        cursor.close()
+    
+    def update_fast_action(self, name, data):
+        cursor = self.connection.cursor()
+        if type(data) == dict:
+            data = json.dumps(data)
+        cursor.execute('insert into FastAction(action_data) values (?)', (data,))
+        self.connection.commit()
+        cursor.close()
+    
+    def get_fast_action_list(self):
+        cursor = self.connection.cursor()
+        cursor.execute('select action from FastAction')
+        return [row for row, in cursor.fetchall()]
+    
+    def get_fast_action(self, name):
+        cursor = self.connection.cursor()
+        cursor.execute('select action_data from FastAction where action=?',(name,))
+        return cursor.fetchone()[0]
 
-            
-room = Room()

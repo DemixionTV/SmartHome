@@ -13,6 +13,7 @@ class ManufacturerType(Enum):
     GPIO = 'GPIO'
     Discord = 'Discord'
     OpenRGB = 'OpenRGB'
+    OpenWeather = 'OpenWeather'
 
 
 class DeviceType(IntEnum):
@@ -34,10 +35,25 @@ class DeviceAbility(IntEnum):
     TurnOff = auto()
     GetDevicePower = auto()
     GetOnlineDevices = auto()
+    OnlineDeviceUpdate = auto()
+    GetLeds = auto()
     SetColor = auto()
     GetColor = auto()
+    GetBrightness = auto()
     SetBrightness = auto()
     SetColorTemperature = auto()
     GetColorTemperature = auto()
     BotCommand = auto()
     Press = auto()
+    GetPowerUsage = auto()
+    GetPowerSavings = auto()
+    GetUsageTime = auto()
+    GetCurrentPower = auto()
+    GetHumidity = auto()
+    GetTemperature = auto()
+    DetectMotion = auto()
+    SMBShares = auto()
+    GetServices = auto()
+    ToggleService = auto()
+    RestartService = auto()
+    GetServiceStatus = auto()

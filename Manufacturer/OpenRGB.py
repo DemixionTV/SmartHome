@@ -18,5 +18,5 @@ class OpenRGB(Manufacturer):
         super().auth(ip_address = ip_address, port = port, program_name = program_name)
     def is_my_device(self, ip_address):
         return False
-    def create_noip_devices(self):
+    def create_noip_devices(self): 
         devices = []
